@@ -1,0 +1,369 @@
+library(mvtnorm)
+library(BAS)
+library(ggplot2)
+library(tidyverse)
+set.seed(123)
+sim_par<- expand.grid (repetition = 1:100,
+                       effect_size = c("no effect", "effect"),
+                       linearity = c("non-linear","linear"),
+                       mc = c("No MC","MC present"),
+                       sample_size = c (30,70,150),
+                       stringsAsFactors = TRUE
+)
+nsim<-nrow(sim_par)
+
+DM_age<- matrix(nrow = nsim, ncol = 150, byrow = TRUE)
+DM_weight<- matrix(nrow = nsim, ncol = 150, byrow = TRUE) 
+DM_cat<- matrix(nrow = nsim, ncol = 150, byrow = TRUE)
+
+mean_age <- 0.95
+mean_weight <- 1.05
+sd_age <- 0.55
+sd_weight <- 0.65
+
+simulate_predictors <- function (mean_A, mean_W, sd_A, sd_W, mc, sample_size){ ## function to create predictors
+  means <- c(mean_A, mean_W)
+  sds <- c(sd_A, sd_W)
+  n <- sample_size
+  if (mc == "No MC") {
+    age<- rnorm(n = sample_size, mean = mean_A, sd = sd_A)
+    weight<- rnorm(n = sample_size, mean = mean_W, sd = sd_W)
+    out <- cbind(age, weight)
+    return (out)
+  } else if (mc == "MC present") {
+    rho <- .5 # population correlation between age and weight
+    rhomat <- matrix(c(1, rho, rho, 1), 2, 2)
+    covmat <- diag(sds) %*% rhomat %*% diag(sds)
+    mat <- mvtnorm::rmvnorm(n = sample_size, mean = means, sigma = covmat)
+    age <- mat[, 1]
+    weight<- mat[, 2]
+    out <- cbind(age, weight)
+    return (out)
+    
+  } else {
+    NULL
+  } 
+  
+}
+
+##simulation
+
+for (i in 1:nsim){
+  mC<- sim_par$mc[i]
+  sample_siz <- sim_par$sample_size[i]
+  for (j in 1:150) {
+    x<- simulate_predictors(mean_A = mean_age, mean_W = mean_weight, sd_A = sd_age, sd_W = sd_weight, mc = mC, sample_size = sample_siz )
+    l<-length(x)/2
+    g<-length(x)
+    f<-l+1
+    sim1<- x[1:l]
+    sim2<- x[f:g]
+    DM_age[i,j] <- sim1[j]
+    DM_weight [i,j] <- sim2[j]
+  }
+} 
+
+
+y<- c()
+haveAcat <- c()
+size<- 0
+simulate_cat <- function (size, l, ef, pred1, pred2) { ##function to create an outcome variable
+  n<- size
+  if (l == "linear" && ef == "no effect") {
+    b0          <- 0.1                                                   
+    b.age       <- 0.03                                                  
+    b.weight    <- 0.05                                                  
+    y           <- 1/(1+exp(-(b0 +b.age*pred1 +b.weight*pred2)))  
+    haveAcat    <- rbinom(n, 1, y)     
+    return (haveAcat)
+  } else if (l == "linear" && ef =="effect") {
+    b0          <- 0.1                                                   
+    b.age       <- 0.62                                                 
+    b.weight    <- 0.65                                                 
+    y           <-1/(1+exp(-(b0 +b.age*pred1 +b.weight*pred2)))  
+    haveAcat    <- rbinom(n, 1, y)  
+    return (haveAcat)
+  } else if (l == "non-linear" && ef =="no effect") {
+    b0          <- 0.1                                                   
+    b.age       <- 0.03                                                 
+    b.weight    <- 0.05 
+    y           <-  1/(1+exp(-(b0 +b.age*(pred1^2) +b.weight*(pred2^2))))  
+    haveAcat    <- rbinom(n, 1, y) 
+    return (haveAcat)
+  } else if (l == "non-linear" && ef == "effect") {
+    b0          <- 0.1                                                 
+    b.age       <- 0.62                                               
+    b.weight    <- 0.65
+    y           <- 1/(1+exp(-(b0 +b.age*(pred1^2) +b.weight*(pred2^2)))) 
+    haveAcat    <- rbinom(n, 1, y) 
+    return (haveAcat)
+  } else {
+    NULL
+  }
+} 
+
+
+##simulation
+for (i in 1:nsim) {
+  size<- sim_par$sample_size[i]
+  l<- sim_par$linearity[i]
+  ef<- sim_par$effect_size[i]
+  pred1<-DM_age[i, 1:size]
+  pred2<-DM_weight[i, 1:size]
+  for (j in 1:150) {
+    DM_cat[i,j] <- simulate_cat (size = size, l = l, ef = ef, pred1 = pred1, pred2 = pred2) [j]
+  }
+}
+
+##function to extract p-values for each predictor
+freq <- function (pred1, pred2, out) { 
+  rr <- glm(out~pred1+ pred2, family = binomial())
+  rrr<-summary(rr)
+  aa<-rrr$coefficients[11]
+  ww<-rrr$coefficients[12]
+  out<-cbind(aa, ww)
+  return(out)
+}
+
+##function to return a hypothesis for each predictor
+hyp_F<- function (p) { 
+  if (p > 0.05) {
+    return("H0")
+  } else if (p < 0.05){
+    return("Ha")
+  }
+}
+
+pre1<-c()
+pre2<-c()
+ou<-c()
+i<-10
+for (i in 1:nsim) {
+  pre1<-DM_age[i, !is.na(DM_age[i, 1:150])]
+  pre2<-DM_weight[i, !is.na(DM_weight[i, 1:150])]
+  ou<-DM_cat[i, !is.na(DM_cat[i, 1:150])]
+  O<-freq(pred1 = pre1, pred2 = pre2, out = ou)
+  O1<-O[1]
+  O2<-O[2]
+  sim_par$Freq1[i] <- O1
+  sim_par$Freq2[i] <- O2
+  
+}
+
+for (i in 1:nsim) {
+  p1<-sim_par$Freq1[i]
+  p2<-sim_par$Freq2[i]
+  sim_par$Freq_hyp1[i]<-hyp_F(p = p1)
+  sim_par$Freq_hyp2[i]<-hyp_F(p = p2)
+}
+
+##function to extract BF for each predictor
+Bayes_F<- function(out, pred1, pred2) { 
+  dat <-data.frame(out, pred1, pred2)
+  fit <- BAS::bas.glm(out~pred1 +pred2, dat, family = binomial(), method = "BAS")
+  ss <- summary(fit)
+  prior_incl_probs <- 0.5 # true if you do no adjust the model prior
+  post_incl_probs <- ss[2:3, "P(B != 0 | Y)"]
+  incl_bayes_factor <- (post_incl_probs / (1 - post_incl_probs)) / (prior_incl_probs / (1 - prior_incl_probs))
+  return( incl_bayes_factor)
+  }
+
+##function to return correlation coefficient between the predictors (manipulation check)
+correlation <-function (pred1, pred2) { 
+  dat<-data.frame(pred1, pred2)
+  r<-cor(dat)
+  mult<-r[2]
+  return(mult)
+}
+
+for (i in 1:nsim) {
+  pred1<-DM_age[i, !is.na(DM_age[i, 1:150])]
+  pred2<-DM_weight[i, !is.na(DM_weight[i, 1:150])]
+  out<-DM_cat[i, !is.na(DM_cat[i, 1:150])]
+  op<-Bayes_F(out, pred1, pred2) 
+  op1<-op[1]
+  op2<-op[2]
+  sim_par$Bayes_Factor1[i]<- op1
+  sim_par$Bayes_Factor2[i]<- op2
+  rel<-correlation(pred1, pred2)
+  sim_par$MultMan[i]<-rel[1]
+}
+
+##function to return Bayesian hypothesis decision for each predictor
+hyp_B<- function (BF) { 
+  if (BF < 1) {
+    return("H0")
+  } else if (BF > 1){
+    return("Ha")
+  }
+}
+
+for (i in 1:nsim) {
+  BF1<-sim_par$Bayes_Factor1[i]
+  BF2<-sim_par$Bayes_Factor2[i]
+  sim_par$bayes_hyp1[i]<-hyp_B(BF = BF1)
+  sim_par$bayes_hyp2[i]<-hyp_B(BF = BF2)
+}
+
+##creating results table for the first predictor
+frequentist1  <- table(sim_par$Freq_hyp1, sim_par$mc,sim_par$linearity, sim_par$sample_size, sim_par$effect_size)/100
+bayesian1 <- table(sim_par$bayes_hyp1, sim_par$mc,sim_par$linearity, sim_par$sample_size, sim_par$effect_size)/100
+
+
+results1 <- data.frame(
+  "Frequentist" = frequentist1,
+  "Bayesian" = bayesian1
+)
+
+names(results1)[names(results1) == "Frequentist.Var1"] <- "hypothesis"
+names(results1)[names(results1) == "Frequentist.Var2"] <- "multicolinearity"
+names(results1)[names(results1) == "Frequentist.Var3"] <- "linearity"
+names(results1)[names(results1) == "Frequentist.Var4"] <- "sample_size"
+names(results1)[names(results1) == "Frequentist.Var5"] <- "effect_size"
+names(results1)[names(results1) == "Frequentist.Freq"] <- "proportion"
+
+names(results1)[names(results1) == "Bayesian.Var1"] <- "hypothesis"
+names(results1)[names(results1) == "Bayesian.Var2"] <- "multicolinearity"
+names(results1)[names(results1) == "Bayesian.Var3"] <- "linearity"
+names(results1)[names(results1) == "Bayesian.Var4"] <- "sample_size"
+names(results1)[names(results1) == "Bayesian.Var5"] <- "effect_size"
+names(results1)[names(results1) == "Bayesian.Freq"] <- "proportion"
+
+results2<-results1[,1:6]
+results3<-results1[,7:12]
+appr<-c("Frequentist")
+appro<-rep(appr, 48)
+approa<-c("Bayesian")
+approac<-rep(approa, 48)
+approach<-c(appro, approac)
+results1<-rbind(results2, results3)
+results1<-cbind(results1, approach)
+
+
+##creating results table for the 2nd predictor
+frequentist2  <- table(sim_par$Freq_hyp2, sim_par$mc,sim_par$linearity, sim_par$sample_size, sim_par$effect_size)/100
+bayesian2 <- table(sim_par$bayes_hyp2, sim_par$mc,sim_par$linearity, sim_par$sample_size, sim_par$effect_size)/100
+
+
+
+results4 <- data.frame(
+  "Frequentist" = frequentist2,
+  "Bayesian" = bayesian2
+)
+
+names(results4)[names(results4) == "Frequentist.Var1"] <- "hypothesis"
+names(results4)[names(results4) == "Frequentist.Var2"] <- "multicolinearity"
+names(results4)[names(results4) == "Frequentist.Var3"] <- "linearity"
+names(results4)[names(results4) == "Frequentist.Var4"] <- "sample_size"
+names(results4)[names(results4) == "Frequentist.Var5"] <- "effect_size"
+names(results4)[names(results4) == "Frequentist.Freq"] <- "proportion"
+
+names(results4)[names(results4) == "Bayesian.Var1"] <- "hypothesis"
+names(results4)[names(results4) == "Bayesian.Var2"] <- "multicolinearity"
+names(results4)[names(results4) == "Bayesian.Var3"] <- "linearity"
+names(results4)[names(results4) == "Bayesian.Var4"] <- "sample_size"
+names(results4)[names(results4) == "Bayesian.Var5"] <- "effect_size"
+names(results4)[names(results4) == "Bayesian.Freq"] <- "proportion"
+
+##binding the results tables for the 1st and 2nd predictor together
+results2<-results4[,1:6]
+results3<-results4[,7:12]
+appr<-c("Frequentist")
+appro<-rep(appr, 48)
+approa<-c("Bayesian")
+approac<-rep(approa, 48)
+approach<-c(appro, approac)
+results5<-rbind(results2, results3)
+results6<-cbind(results5, approach)
+results<-rbind(results1, results6)
+
+pred<-c("1st","1st")
+pred<-rep(pred,48)
+pred2<-c("2nd","2nd")
+pred2<-rep(pred2,48)
+predictor<-c(pred, pred2)
+results<-cbind(results,predictor)
+step1<-results
+step2<- step1[results$hypothesis != "H0",]
+type1er<-step2[step2$effect_size != "effect",]
+sD<-sqrt(type1er$proportion*(1-type1er$proportion))
+sE<-sD/sqrt(100)
+type1er<-cbind(type1er, sE)
+type11<-type1er[1:24, ]
+type12<- type1er[25:48,]
+##creating type 1 error graph
+type1<-ggplot(data = type1er, aes(x = sample_size, y = proportion, group = predictor)) +geom_line(aes(x = sample_size, y = proportion, colour = predictor), size = 1) +geom_point(aes(x = sample_size, y = proportion, colour = predictor)) + geom_errorbar(aes(ymin=proportion-sE, ymax=proportion+sE, colour = predictor), size = 1, width=.05)
+type1<- type1 + facet_grid(linearity~multicolinearity~approach) + xlab("Sample Size") +ylab("Type I Error Rate") +theme_bw()
+type1
+
+step3<- step1[results$hypothesis != "H0",]
+power<-step3[step3$effect_size != "no effect",]
+sD<-sqrt(power$proportion*(1-power$proportion))
+sE<-sD/sqrt(100)
+power<-cbind(power, sE)
+Powe<-ggplot(data = power, aes(x = sample_size, y = proportion, group = predictor)) +geom_line(aes(x = sample_size, y = proportion, colour = predictor), size = 1) +geom_point(aes(x = sample_size, y = proportion, colour = predictor)) + geom_errorbar(aes(ymin=proportion-sE, ymax=proportion+sE, colour = predictor), size = 1, width=.05)
+Powe<- Powe + facet_grid(linearity~multicolinearity~approach) + xlab("Sample Size") +ylab("Power Rate") +theme_bw()
+Powe
+
+##manipulation check for multicollinearity
+manipulmult<- ggplot(data = sim_par, aes(x = sim_par$MultMan)) + geom_boxplot()
+manipulmult<- manipulmult + facet_grid(linearity~sample_size~mc~effect_size) + ggtitle("Manipulation check for Multicollinearity") + labs(x = "correlation between the predictors")
+
+histt1<-sim_par
+
+## distribution plotw od p-values and Bayes factors for each predictor
+P_values<- ggplot(histt1, aes(x=histt1$Freq1)) + geom_histogram()
+P_values<- P_values + facet_grid(mc~linearity~effect_size) + xlab("Distribution of P-values for the 1st predictor") +ylab("")
+
+P_values1<- ggplot(histt1, aes(x=histt1$Freq2)) + geom_histogram()
+P_values1<- P_values1 + facet_grid(mc~linearity~effect_size) + xlab("Distribution of P-values for the 2nd predictor") +ylab("")
+
+BF<- ggplot(histt1, aes(x=log(histt1$Bayes_Factor1))) + geom_histogram()
+BF<- BF + facet_grid(mc~linearity~effect_size) + xlab("Distribution of BF for the 1st predictor") +xlim(-5, 15) +ylab("")
+
+
+BF3<- ggplot(histt1, aes(x=log(histt1$Bayes_Factor2))) + geom_histogram()
+BF3<- BF3 + facet_grid(mc~linearity~effect_size) + xlab("Distribution of BF for the 2nd predictor") + xlim(-5, 15)+ylab("")
+
+##manipularion check for linearity
+
+
+## effect, no MC, no lin
+predictor_1<-DM_age[1703, 1:150]
+outcome<-DM_cat[1703,1:150]
+predictor_2<-DM_weight[1703, 1:150]
+
+## effect,  MC, no lin
+predictor_1<-DM_age[2107, 1:150]
+outcome<-DM_cat[2107,1:150]
+predictor_2<-DM_weight[2107, 1:150]
+
+##effect,  MC,  lin
+predictor_1<-DM_age[2303, 1:150]
+outcome<-DM_cat[2303,1:150]
+predictor_2<-DM_weight[2303, 1:150]
+
+##effect, no MC,  lin
+predictor_1<-DM_age[1937, 1:150]
+outcome<-DM_cat[1937,1:150]
+predictor_2<-DM_weight[1937, 1:150]
+
+
+data<-data.frame(predictor_1, predictor_2, outcome)
+model <- glm( outcome~predictor_1+predictor_2, data = data, 
+              family = "binomial")
+probabilities <- predict(model, type = "response")
+predicted.classes <- ifelse(probabilities > 0.5, "pos", "neg")
+head(predicted.classes)
+
+predictors <- c("predictor_1", "predictor_2")
+# Bind the logit and tidying the data for plot
+mydata <- data %>%
+  mutate(logit = log(probabilities/(1-probabilities))) %>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+ggplot(mydata[1:300,], aes(logit, predictor.value))+
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  theme_bw() + 
+  facet_wrap(~predictors, scales = "free")
+
